@@ -10,8 +10,8 @@ from datetime import datetime
 # ============================================================
 #  КОНФИГУРАЦИЯ — попълни тук своите данни
 # ============================================================
-DISCORD_TOKEN    = "MTQ5NTQzMDEyNjIzMjUzNTM3MQ.Ge67wW.3GMwMoySlWRixh5A4G4CkW9jXZ0n1J4OksbcxU"
-CHANNEL_ID       = 1482841321168179384   # ID на канала за нотификации
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID    = int(os.getenv("CHANNEL_ID"))
 CHECK_INTERVAL   = 60                   # Проверка на всеки 60 секунди
 LAST_POST_FILE   = "last_post_id.json"  # Файл за запазване на последния пост
 # ============================================================
