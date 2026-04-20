@@ -12,7 +12,7 @@ from datetime import datetime
 # ============================================================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID    = int(os.getenv("CHANNEL_ID"))
-CHECK_INTERVAL   = 60                   # Проверка на всеки 60 секунди
+CHECK_INTERVAL   = 30                   # Проверка на всеки 30 секунди
 LAST_POST_FILE   = "last_post_id.json"  # Файл за запазване на последния пост
 # ============================================================
 
@@ -68,8 +68,22 @@ async def fetch_latest_post() -> dict | None:
         text = first.get_text(separator=" ", strip=True)
 
         # Намираме дата/час
-        time_tag = soup.find("time") or soup.find(class_="timestamp")
-        date_str = time_tag.get_text(strip=True) if time_tag else "Неизвестна дата"
+        time_tag = (
+    soup.find("time") or
+    soup.find(class_="timestamp") or
+    soup.find(class_="date") or
+    soup.find(class_="created-at") or
+    soup.find("span", class_=lambda x: x and "date" in x.lower()) or
+    soup.find("span", class_=lambda x: x and "time" in x.lower())
+)
+
+if time_tag:
+    date_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
+else:
+    # Взимаме датата от текста на поста ако я има
+    import re
+    date_match = re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}', html)
+    date_str = date_match.group(0) if date_match else "Вижте trumpstruth.org"
 
         # Уникален ID — използваме хеш на текста
         import hashlib
