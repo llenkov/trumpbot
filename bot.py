@@ -5,15 +5,16 @@ from bs4 import BeautifulSoup
 import os
 import json
 import asyncio
+import re
 from datetime import datetime
 
 # ============================================================
-#  КОНФИГУРАЦИЯ — попълни тук своите данни
+#  КОНФИГУРАЦИЯ
 # ============================================================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID    = int(os.getenv("CHANNEL_ID"))
-CHECK_INTERVAL   = 30                   # Проверка на всеки 30 секунди
-LAST_POST_FILE   = "last_post_id.json"  # Файл за запазване на последния пост
+DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID       = int(os.getenv("CHANNEL_ID"))
+CHECK_INTERVAL   = int(os.getenv("CHECK_INTERVAL", "30"))
+LAST_POST_FILE   = "last_post_id.json"
 # ============================================================
 
 TRUMP_URL = "https://www.trumpstruth.org/"
@@ -36,7 +37,6 @@ def save_last_post_id(post_id: str):
 
 
 async def fetch_latest_post() -> dict | None:
-    """Взима последния пост от trumpstruth.org"""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -54,10 +54,8 @@ async def fetch_latest_post() -> dict | None:
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # Намираме блоковете с постове
         posts = soup.find_all("div", class_="truth")
         if not posts:
-            # Опитваме с по-общ селектор
             posts = soup.find_all("p")
 
         if not posts:
@@ -67,35 +65,36 @@ async def fetch_latest_post() -> dict | None:
         first = posts[0]
         text = first.get_text(separator=" ", strip=True)
 
-        # Намираме дата/час
-        time_tag = (
-    soup.find("time") or
-    soup.find(class_="timestamp") or
-    soup.find(class_="date") or
-    soup.find(class_="created-at") or
-    soup.find("span", class_=lambda x: x and "date" in x.lower()) or
-    soup.find("span", class_=lambda x: x and "time" in x.lower())
-)
+        # Търсим дата
+        date_str = "Неизвестна дата"
 
-if time_tag:
-    date_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
-else:
-    # Взимаме датата от текста на поста ако я има
-    import re
-    date_match = re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}', html)
-    date_str = date_match.group(0) if date_match else "Вижте trumpstruth.org"
+        time_tag = soup.find("time")
+        if time_tag:
+            date_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
+        else:
+            for cls in ["timestamp", "date", "created-at"]:
+                tag = soup.find(class_=cls)
+                if tag:
+                    date_str = tag.get_text(strip=True)
+                    break
 
-        # Уникален ID — използваме хеш на текста
+        if date_str == "Неизвестна дата":
+            date_match = re.search(
+                r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}',
+                html
+            )
+            if date_match:
+                date_str = date_match.group(0)
+
         import hashlib
         post_id = hashlib.md5(text.encode()).hexdigest()
 
-        # Линк към оригиналния пост
         link_tag = first.find("a", href=True)
         original_url = link_tag["href"] if link_tag else TRUMP_URL
 
         return {
             "id":   post_id,
-            "text": text[:1500],   # Discord има лимит
+            "text": text[:1500],
             "date": date_str,
             "url":  original_url,
         }
@@ -113,10 +112,7 @@ def build_embed(post: dict) -> discord.Embed:
         url=post["url"] if post["url"].startswith("http") else TRUMP_URL,
         timestamp=datetime.utcnow(),
     )
-    embed.set_author(
-        name="Donald J. Trump · @realDonaldTrump",
-        icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/White_shark.jpg/1px-White_shark.jpg",
-    )
+    embed.set_author(name="Donald J. Trump · @realDonaldTrump")
     embed.add_field(name="📅 Публикувано", value=post["date"], inline=False)
     embed.add_field(name="🔗 Източник", value="[trumpstruth.org](https://www.trumpstruth.org/)", inline=False)
     embed.set_footer(text="Truth Social Monitor Bot")
@@ -139,7 +135,6 @@ async def check_for_new_posts():
     if post["id"] != last_id:
         print(f"[NEW POST] {post['date']} — {post['text'][:80]}...")
         save_last_post_id(post["id"])
-
         embed = build_embed(post)
         await channel.send(
             content="@everyone 🚨 **Тръмп публикува нещо ново в Truth Social!**",
@@ -164,7 +159,6 @@ async def on_ready():
 
 @bot.command(name="lastpost")
 async def last_post(ctx):
-    """!lastpost — показва последния намерен пост"""
     await ctx.send("⏳ Проверявам Truth Social...")
     post = await fetch_latest_post()
     if post:
@@ -176,7 +170,6 @@ async def last_post(ctx):
 
 @bot.command(name="status")
 async def status(ctx):
-    """!status — показва статуса на бота"""
     last_id = load_last_post_id()
     embed = discord.Embed(title="📊 Статус на бота", color=0x00AAFF)
     embed.add_field(name="✅ Онлайн", value="Да", inline=True)
