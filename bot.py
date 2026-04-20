@@ -78,13 +78,19 @@ async def fetch_latest_post() -> dict | None:
                     date_str = tag.get_text(strip=True)
                     break
 
-        if date_str == "Неизвестна дата":
-            date_match = re.search(
-                r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}',
-                html
-            )
-            if date_match:
-                date_str = date_match.group(0)
+       date_match = re.search(
+    r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}\s+[AP]M',
+    html
+)
+if date_match:
+    date_str = date_match.group(0)
+else:
+    date_match = re.search(
+        r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}',
+        html
+    )
+    if date_match:
+        date_str = date_match.group(0)
 
         import hashlib
         post_id = hashlib.md5(text.encode()).hexdigest()
