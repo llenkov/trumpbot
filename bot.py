@@ -4,17 +4,17 @@ import aiohttp
 from bs4 import BeautifulSoup
 import os
 import json
-import asyncio
 import re
+import hashlib
 from datetime import datetime
 
 # ============================================================
 #  КОНФИГУРАЦИЯ
 # ============================================================
-DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID       = int(os.getenv("CHANNEL_ID"))
-CHECK_INTERVAL   = int(os.getenv("CHECK_INTERVAL", "30"))
-LAST_POST_FILE   = "last_post_id.json"
+DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID     = int(os.getenv("CHANNEL_ID"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
+LAST_POST_FILE = "last_post_id.json"
 # ============================================================
 
 TRUMP_URL = "https://www.trumpstruth.org/"
@@ -23,7 +23,7 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-def load_last_post_id() -> str | None:
+def load_last_post_id():
     if os.path.exists(LAST_POST_FILE):
         with open(LAST_POST_FILE, "r") as f:
             data = json.load(f)
@@ -36,7 +36,44 @@ def save_last_post_id(post_id: str):
         json.dump({"last_id": post_id}, f)
 
 
-async def fetch_latest_post() -> dict | None:
+def extract_date(soup, html: str) -> str:
+    # 1. Търсим <time> таг
+    time_tag = soup.find("time")
+    if time_tag:
+        val = time_tag.get("datetime") or time_tag.get_text(strip=True)
+        if val:
+            return val
+
+    # 2. Търсим по CSS класове
+    for cls in ["timestamp", "date", "created-at"]:
+        tag = soup.find(class_=cls)
+        if tag:
+            return tag.get_text(strip=True)
+
+    # 3. Търсим дата + час в HTML текста (April 17, 2026, 10:27 PM)
+    match = re.search(
+        r'(January|February|March|April|May|June|July|August'
+        r'|September|October|November|December)'
+        r'\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}\s+[AP]M',
+        html
+    )
+    if match:
+        return match.group(0)
+
+    # 4. Само дата без час (April 17, 2026)
+    match = re.search(
+        r'(January|February|March|April|May|June|July|August'
+        r'|September|October|November|December)'
+        r'\s+\d{1,2},\s+\d{4}',
+        html
+    )
+    if match:
+        return match.group(0)
+
+    return "Неизвестна дата"
+
+
+async def fetch_latest_post():
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -46,7 +83,11 @@ async def fetch_latest_post() -> dict | None:
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(TRUMP_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(
+                TRUMP_URL,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
                 if resp.status != 200:
                     print(f"[ERROR] HTTP {resp.status} от trumpstruth.org")
                     return None
@@ -57,42 +98,13 @@ async def fetch_latest_post() -> dict | None:
         posts = soup.find_all("div", class_="truth")
         if not posts:
             posts = soup.find_all("p")
-
         if not posts:
             print("[WARN] Не са намерени постове в HTML-а.")
             return None
 
         first = posts[0]
         text = first.get_text(separator=" ", strip=True)
-
-        # Търсим дата
-        date_str = "Неизвестна дата"
-
-        time_tag = soup.find("time")
-        if time_tag:
-            date_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
-        else:
-            for cls in ["timestamp", "date", "created-at"]:
-                tag = soup.find(class_=cls)
-                if tag:
-                    date_str = tag.get_text(strip=True)
-                    break
-
-       date_match = re.search(
-    r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}\s+[AP]M',
-    html
-)
-if date_match:
-    date_str = date_match.group(0)
-else:
-    date_match = re.search(
-        r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}',
-        html
-    )
-    if date_match:
-        date_str = date_match.group(0)
-
-        import hashlib
+        date_str = extract_date(soup, html)
         post_id = hashlib.md5(text.encode()).hexdigest()
 
         link_tag = first.find("a", href=True)
@@ -111,16 +123,21 @@ else:
 
 
 def build_embed(post: dict) -> discord.Embed:
+    url = post["url"] if post["url"].startswith("http") else TRUMP_URL
     embed = discord.Embed(
         title="🇺🇸 Нова публикация на Доналд Тръмп",
         description=post["text"],
         color=0xE8192C,
-        url=post["url"] if post["url"].startswith("http") else TRUMP_URL,
+        url=url,
         timestamp=datetime.utcnow(),
     )
     embed.set_author(name="Donald J. Trump · @realDonaldTrump")
     embed.add_field(name="📅 Публикувано", value=post["date"], inline=False)
-    embed.add_field(name="🔗 Източник", value="[trumpstruth.org](https://www.trumpstruth.org/)", inline=False)
+    embed.add_field(
+        name="🔗 Източник",
+        value="[trumpstruth.org](https://www.trumpstruth.org/)",
+        inline=False
+    )
     embed.set_footer(text="Truth Social Monitor Bot")
     return embed
 
@@ -137,7 +154,6 @@ async def check_for_new_posts():
         return
 
     last_id = load_last_post_id()
-
     if post["id"] != last_id:
         print(f"[NEW POST] {post['date']} — {post['text'][:80]}...")
         save_last_post_id(post["id"])
@@ -180,7 +196,11 @@ async def status(ctx):
     embed = discord.Embed(title="📊 Статус на бота", color=0x00AAFF)
     embed.add_field(name="✅ Онлайн", value="Да", inline=True)
     embed.add_field(name="⏱️ Интервал", value=f"{CHECK_INTERVAL} сек.", inline=True)
-    embed.add_field(name="🆔 Последен пост ID", value=last_id or "Все още не е засечен", inline=False)
+    embed.add_field(
+        name="🆔 Последен пост ID",
+        value=last_id or "Все още не е засечен",
+        inline=False
+    )
     await ctx.send(embed=embed)
 
 
