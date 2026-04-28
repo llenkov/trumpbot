@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import os
 import re
 import hashlib
+import asyncio
 from datetime import datetime
 
 # ============================================================
@@ -22,6 +23,9 @@ intents.message_content = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Кеш в паметта — изчиства се само при рестарт
+_cached_last_id: str | None = None
+
 
 def extract_date(soup, html: str) -> str:
     time_tag = soup.find("time")
@@ -29,12 +33,10 @@ def extract_date(soup, html: str) -> str:
         val = time_tag.get("datetime") or time_tag.get_text(strip=True)
         if val:
             return val
-
     for cls in ["timestamp", "date", "created-at"]:
         tag = soup.find(class_=cls)
         if tag:
             return tag.get_text(strip=True)
-
     match = re.search(
         r'(January|February|March|April|May|June|July|August'
         r'|September|October|November|December)'
@@ -43,7 +45,6 @@ def extract_date(soup, html: str) -> str:
     )
     if match:
         return match.group(0)
-
     match = re.search(
         r'(January|February|March|April|May|June|July|August'
         r'|September|October|November|December)'
@@ -52,7 +53,6 @@ def extract_date(soup, html: str) -> str:
     )
     if match:
         return match.group(0)
-
     return "Неизвестна дата"
 
 
@@ -72,12 +72,11 @@ async def fetch_latest_post():
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status != 200:
-                    print(f"[ERROR] HTTP {resp.status} от trumpstruth.org")
+                    print(f"[ERROR] HTTP {resp.status}")
                     return None
                 html = await resp.text()
 
         soup = BeautifulSoup(html, "html.parser")
-
         posts = soup.find_all("div", class_="truth")
         if not posts:
             posts = soup.find_all("p")
@@ -88,7 +87,9 @@ async def fetch_latest_post():
         first = posts[0]
         text = first.get_text(separator=" ", strip=True)
         date_str = extract_date(soup, html)
-        post_id = hashlib.md5(text.encode()).hexdigest()
+
+        stable_text = " ".join(text.split())[:100]
+        post_id = hashlib.md5(stable_text.encode()).hexdigest()
 
         link_tag = first.find("a", href=True)
         original_url = link_tag["href"] if link_tag else TRUMP_URL
@@ -99,32 +100,30 @@ async def fetch_latest_post():
             "date": date_str,
             "url":  original_url,
         }
-
     except Exception as e:
         print(f"[ERROR] Грешка при fetch: {e}")
         return None
 
 
-async def get_last_post_id_from_discord() -> str | None:
-    """Чете последното съобщение на бота от канала и взима ID-то от footer-а."""
+async def load_last_id_from_discord() -> str | None:
+    """Чете последния известен ID от историята на Discord канала."""
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
             return None
-
-        async for message in channel.history(limit=50):
+        async for message in channel.history(limit=100):
             if message.author == bot.user and message.embeds:
-                embed = message.embeds[0]
-                # ID-то е скрито в footer-а
-                if embed.footer and embed.footer.text:
-                    parts = embed.footer.text.split("|")
-                    for part in parts:
+                footer = message.embeds[0].footer
+                if footer and footer.text and "ID:" in footer.text:
+                    for part in footer.text.split("|"):
                         part = part.strip()
                         if part.startswith("ID:"):
-                            return part.replace("ID:", "").strip()
+                            found_id = part.replace("ID:", "").strip()
+                            print(f"[DISCORD] Намерен последен ID: {found_id[:8]}...")
+                            return found_id
         return None
     except Exception as e:
-        print(f"[WARN] Не успях да прочета от Discord: {e}")
+        print(f"[WARN] Грешка при четене на Discord история: {e}")
         return None
 
 
@@ -144,13 +143,14 @@ def build_embed(post: dict) -> discord.Embed:
         value="[trumpstruth.org](https://www.trumpstruth.org/)",
         inline=False
     )
-    # Пазим post ID в footer-а — така оцелява при рестарт
     embed.set_footer(text=f"Truth Social Monitor Bot | ID: {post['id']}")
     return embed
 
 
 @tasks.loop(seconds=CHECK_INTERVAL)
 async def check_for_new_posts():
+    global _cached_last_id
+
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
         print(f"[ERROR] Канал {CHANNEL_ID} не е намерен!")
@@ -160,11 +160,16 @@ async def check_for_new_posts():
     if post is None:
         return
 
-    last_id = await get_last_post_id_from_discord()
-    print(f"[CHECK] Последен ID: {last_id[:8] if last_id else 'Няма'} | Нов ID: {post['id'][:8]} ({datetime.now().strftime('%H:%M:%S')})")
+    # Ако кешът е празен (след рестарт), заредете от Discord
+    if _cached_last_id is None:
+        _cached_last_id = await load_last_id_from_discord()
+        print(f"[INIT] Зареден ID от Discord: {_cached_last_id[:8] if _cached_last_id else 'Няма'}")
 
-    if post["id"] != last_id:
+    print(f"[CHECK] Кеш: {_cached_last_id[:8] if _cached_last_id else 'Няма'} | Нов: {post['id'][:8]} ({datetime.now().strftime('%H:%M:%S')})")
+
+    if post["id"] != _cached_last_id:
         print(f"[NEW POST] {post['date']} — {post['text'][:80]}...")
+        _cached_last_id = post["id"]
         embed = build_embed(post)
         await channel.send(
             content="@everyone 🚨 **Тръмп публикува нещо ново в Truth Social!**",
@@ -176,8 +181,16 @@ async def check_for_new_posts():
 
 @check_for_new_posts.before_loop
 async def before_check():
+    global _cached_last_id
     await bot.wait_until_ready()
-    print(f"[BOT] Готов. Стартирам мониторинга на всеки {CHECK_INTERVAL} секунди...")
+
+    # Изчакваме 5 секунди Discord да се стабилизира
+    await asyncio.sleep(5)
+
+    # Зареждаме последния ID при старт
+    _cached_last_id = await load_last_id_from_discord()
+    print(f"[BOT] Стартиран. Последен ID: {_cached_last_id[:8] if _cached_last_id else 'Няма'}")
+    print(f"[BOT] Проверка на всеки {CHECK_INTERVAL} секунди.")
 
 
 @bot.event
@@ -199,13 +212,12 @@ async def last_post(ctx):
 
 @bot.command(name="status")
 async def status(ctx):
-    last_id = await get_last_post_id_from_discord()
     embed = discord.Embed(title="📊 Статус на бота", color=0x00AAFF)
     embed.add_field(name="✅ Онлайн", value="Да", inline=True)
     embed.add_field(name="⏱️ Интервал", value=f"{CHECK_INTERVAL} сек.", inline=True)
     embed.add_field(
         name="🆔 Последен пост ID",
-        value=last_id[:8] + "..." if last_id else "Все още не е засечен",
+        value=_cached_last_id[:8] + "..." if _cached_last_id else "Все още не е засечен",
         inline=False
     )
     await ctx.send(embed=embed)
