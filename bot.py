@@ -23,8 +23,8 @@ intents.message_content = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Кеш в паметта — изчиства се само при рестарт
 _cached_last_id: str | None = None
+_started = False  # Предотвратява двоен старт при reconnect
 
 
 def extract_date(soup, html: str) -> str:
@@ -87,10 +87,8 @@ async def fetch_latest_post():
         first = posts[0]
         text = first.get_text(separator=" ", strip=True)
         date_str = extract_date(soup, html)
-
         stable_text = " ".join(text.split())[:100]
         post_id = hashlib.md5(stable_text.encode()).hexdigest()
-
         link_tag = first.find("a", href=True)
         original_url = link_tag["href"] if link_tag else TRUMP_URL
 
@@ -106,7 +104,6 @@ async def fetch_latest_post():
 
 
 async def load_last_id_from_discord() -> str | None:
-    """Чете последния известен ID от историята на Discord канала."""
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
@@ -160,11 +157,6 @@ async def check_for_new_posts():
     if post is None:
         return
 
-    # Ако кешът е празен (след рестарт), заредете от Discord
-    if _cached_last_id is None:
-        _cached_last_id = await load_last_id_from_discord()
-        print(f"[INIT] Зареден ID от Discord: {_cached_last_id[:8] if _cached_last_id else 'Няма'}")
-
     print(f"[CHECK] Кеш: {_cached_last_id[:8] if _cached_last_id else 'Няма'} | Нов: {post['id'][:8]} ({datetime.now().strftime('%H:%M:%S')})")
 
     if post["id"] != _cached_last_id:
@@ -183,20 +175,24 @@ async def check_for_new_posts():
 async def before_check():
     global _cached_last_id
     await bot.wait_until_ready()
-
-    # Изчакваме 5 секунди Discord да се стабилизира
     await asyncio.sleep(5)
-
-    # Зареждаме последния ID при старт
     _cached_last_id = await load_last_id_from_discord()
-    print(f"[BOT] Стартиран. Последен ID: {_cached_last_id[:8] if _cached_last_id else 'Няма'}")
+    print(f"[BOT] Последен ID при старт: {_cached_last_id[:8] if _cached_last_id else 'Няма'}")
     print(f"[BOT] Проверка на всеки {CHECK_INTERVAL} секунди.")
 
 
 @bot.event
 async def on_ready():
+    global _started
     print(f"[BOT] Влязох като: {bot.user} (ID: {bot.user.id})")
-    check_for_new_posts.start()
+
+    # Стартираме loop-а само ВЕДНЪЖ — предотвратява дублиране при reconnect
+    if not _started:
+        _started = True
+        check_for_new_posts.start()
+        print("[BOT] Мониторингът стартиран.")
+    else:
+        print("[BOT] Reconnect — мониторингът вече работи, не стартираме отново.")
 
 
 @bot.command(name="lastpost")
