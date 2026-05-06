@@ -157,6 +157,11 @@ def build_embed(post: dict) -> discord.Embed:
 
 @tasks.loop(seconds=CHECK_INTERVAL)
 async def check_for_new_posts():
+if getattr(bot, "already_running", False):
+    return
+
+bot.already_running = True
+    
     global _cached_last_id
 
     channel = bot.get_channel(CHANNEL_ID)
