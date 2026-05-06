@@ -1,3 +1,14 @@
+import os
+import sys
+
+LOCK_FILE = "/tmp/bot.lock"
+
+if os.path.exists(LOCK_FILE):
+    print("❌ Вече има стартиран бот. Излизам...")
+    sys.exit()
+
+with open(LOCK_FILE, "w") as f:
+    f.write("running")
 import discord
 from discord.ext import commands, tasks
 import aiohttp
