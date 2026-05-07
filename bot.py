@@ -1,14 +1,3 @@
-import os
-import sys
-
-LOCK_FILE = "/tmp/bot.lock"
-
-if os.path.exists(LOCK_FILE):
-    print("❌ Вече има стартиран бот. Излизам...")
-    sys.exit()
-
-with open(LOCK_FILE, "w") as f:
-    f.write("running")
 import discord
 from discord.ext import commands, tasks
 import aiohttp
@@ -157,11 +146,6 @@ def build_embed(post: dict) -> discord.Embed:
 
 @tasks.loop(seconds=CHECK_INTERVAL)
 async def check_for_new_posts():
-if getattr(bot, "already_running", False):
-    return
-
-bot.already_running = True
-    
     global _cached_last_id
 
     channel = bot.get_channel(CHANNEL_ID)
